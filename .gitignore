@@ -1,0 +1,18 @@
+# Python / Flask
+**/__pycache__/
+*.py[cod]
+backend/venv/
+backend/env/
+backend/.env
+
+# Node / Vite / Next
+**/node_modules/
+**/.pnpm-store/
+nutriplan-frontend/dist/
+nutriplan-frontend/.next/
+
+# IDEs & System files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

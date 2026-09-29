@@ -1,941 +1,484 @@
-﻿NutriPlan — Final Idea & System Architecture
-1. Project Overview
+﻿# NutriPlan — Institutional Meal Optimization System
 
-NutriPlan is a web-based institutional meal optimization system designed for colleges, hostels, schools, shelters, and other mass-meal institutions.
+> Hack4Values · Track 4 · PS 4.2 "The Hidden Nutrition Gap in Institutional Meals"
+> Stack: **React (Vite) + Python + Flask + MongoDB**, with an optional LLM (Groq) that only *explains*.
 
-The system helps a non-technical meal planner create a balanced 7-day meal plan while simultaneously considering:
+This file is the build spec. Build exactly this. Anything marked **(stretch)** is only done if the core is finished.
 
-👥 Number of people
-💰 Daily meal budget
-🥗 Nutritional requirements
-📦 Available ingredients
-🍳 Kitchen capacity
-🌱 Dietary requirements
-🔄 Meal variety
+---
 
-The core principle is:
+## 1. What we are building
 
-Do not hide the trade-off between nutrition, cost, and operational constraints. Make it visible and help the planner find the best feasible plan.
+A web tool for a **college hostel mess in-charge** to answer one question:
 
-2. Problem We Are Solving
+> "Given my budget, my stock and my kitchen, can I feed 500 students properly for a week, and if not, what exactly is missing?"
 
-Institutional kitchens have to prepare food for hundreds of people every day.
+The in-charge can:
 
-The planner must answer several questions simultaneously:
+1. **See** the week's cost and nutrition at a glance (Dashboard).
+2. **Manage** food items and their per-serving cost and nutrients (Food Items).
+3. **Plan** a 7-day × 3-meal menu by hand (Mess Menu).
+4. **Analyse** any menu and expose hidden nutrient gaps (Analyser).
+5. **Balance**: auto-generate a menu that meets nutrition within budget, run what-ifs, and get honest alternatives when it is impossible (Balancer).
 
-Can we afford the menu?
-        +
-Does it provide adequate nutrition?
-        +
-Do we have the required ingredients?
-        +
-Can our kitchen prepare it?
-        +
-Does it respect dietary requirements?
-        +
-Is the menu sufficiently varied?
+### The three demo moments (everything is built to make these work)
 
-A low-cost menu may satisfy the budget but create nutritional gaps.
+| Moment | What the judge sees |
+|---|---|
+| **Hidden gap** | A menu that looks fine (cost within budget, stomachs full) shows **iron 56%, protein 84%** in the Analyser. |
+| **Optimize + what-if** | At ₹18,000/day the Balancer builds a plan meeting all targets. Moving the budget slider re-solves and shows before/after. |
+| **Honest infeasibility** | At ₹15,000/day, full targets are impossible. The app says **why**, shows the **exact funding gap**, and offers computed alternatives. It never fakes a plan. |
 
-A highly nutritious menu may exceed the available budget.
+---
 
-A theoretically good menu may require ingredients that are unavailable.
+## 2. Non-negotiable principles
 
-Therefore, NutriPlan treats meal planning as a constraint-driven decision problem rather than simply generating recipes.
+1. **Numbers come from code, never from the LLM.** Cost, nutrient totals, coverage %, feasibility and the menu itself are computed deterministically in Python. Every number on screen must be reproducible.
+2. **The LLM only explains.** It receives already-computed JSON and writes plain-language text. It never generates menus, calculates nutrition, invents prices, or validates anything.
+3. **Nutrition is a hard constraint, not a score.** A plan below target is never shown as "success". A nutrient below 100% is always shown in amber/red, including in the constraint checklist.
+4. **Trade-offs are surfaced.** When constraints conflict, say which one, by how much, and what could change.
+5. **App works without the LLM.** If Groq fails or times out, template explanations are returned instead.
+6. **Sample data is labeled as sample data.** Nutrient values are demo values, not authoritative IFCT values.
 
-3. Target User
-Primary User
+---
 
-Institutional Meal Planner / Mess Manager
+## 3. System architecture
 
-The user does not need to understand:
+```
+┌──────────────────────────────────────────────────────────────┐
+│                 REACT (Vite) FRONTEND                        │
+│  Dashboard | Food Items | Mess Menu | Analyser | Balancer    │
+└───────────────────────────┬──────────────────────────────────┘
+                            │  JSON over HTTP  (/api/*)
+                            ▼
+┌──────────────────────────────────────────────────────────────┐
+│                       FLASK API                              │
+│  routes/   food_items · stock · settings · menu · dashboard  │
+│            analyze · balance · whatif · explain              │
+│                                                              │
+│  services/ ┌────────────────────────────────────────────┐    │
+│            │ nutrition.py   evaluate any menu (pure math)│   │
+│            │ optimizer.py   MILP via scipy.optimize.milp │   │
+│            │ assign.py      order chosen meals into days │    │
+│            │ diagnose.py    infeasibility + alternatives │    │
+│            │ swaps.py       ranked meal-swap suggestions │    │
+│            │ explain.py     Groq call + template fallback│    │
+│            └────────────────────────────────────────────┘    │
+└──────────────┬───────────────────────────────┬───────────────┘
+               │ PyMongo                       │ HTTPS (optional)
+               ▼                               ▼
+      ┌─────────────────┐              ┌─────────────────┐
+      │    MongoDB      │              │   Groq LLM API  │
+      │ food_items      │              │  EXPLAIN ONLY   │
+      │ stock           │              └─────────────────┘
+      │ settings        │
+      │ menus           │
+      │ plan_runs       │
+      └─────────────────┘
+```
 
-optimization algorithms
-mathematical programming
-nutrition equations
-AI models
-database systems
+**Data flow rule:** `DB → services (deterministic) → JSON result → (optional) LLM explanation → UI`. The LLM is a leaf at the end. Nothing ever flows from the LLM back into calculations.
 
-Instead, they interact with simple questions:
+---
 
-How many people are you serving?
+## 4. Tech stack
 
-What is your daily budget?
+| Layer | Choice | Notes |
+|---|---|---|
+| Frontend | React 19, Vite, React Router, Tailwind CSS, lucide-react | Recharts optional for the coverage chart |
+| Backend | Python 3.11+, Flask, flask-cors | App factory + blueprints |
+| Validation | Pydantic v2 | Request/response models |
+| Optimization | `numpy`, `scipy>=1.9` (`scipy.optimize.milp`, HiGHS) | No extra solver install needed |
+| Database | MongoDB (Atlas free tier or local), PyMongo | No auth/users |
+| LLM (optional) | Groq API via `groq` SDK | Model name from env, never hardcoded |
+| Tests | pytest | Solver + evaluator tests are required |
+| Deploy | Vercel/Netlify (frontend), Render (Flask + gunicorn), Atlas | Localhost is fine for the demo |
 
-What ingredients are available?
+---
 
-What dietary requirements should we respect?
+## 5. Repository structure
 
-What can your kitchen handle?
+```
+nutriplan/
+├── README.md
+├── backend/
+│   ├── app.py                    # create_app(), blueprint registration, CORS
+│   ├── config.py                 # env loading
+│   ├── db.py                     # Mongo client + collection getters
+│   ├── schemas.py                # Pydantic models (FoodItem, Settings, PlanResult, ...)
+│   ├── routes/
+│   │   ├── food_items.py
+│   │   ├── stock.py
+│   │   ├── settings.py
+│   │   ├── menu.py
+│   │   ├── dashboard.py
+│   │   ├── analyze.py
+│   │   ├── balance.py            # /balance and /whatif
+│   │   └── explain.py
+│   ├── services/
+│   │   ├── nutrition.py
+│   │   ├── optimizer.py
+│   │   ├── assign.py
+│   │   ├── diagnose.py
+│   │   ├── swaps.py
+│   │   └── explain.py
+│   ├── seed/
+│   │   ├── food_items.json       # built from the table in Appendix A
+│   │   └── seed.py               # idempotent; also used by POST /api/seed/reset
+│   ├── tests/
+│   │   ├── test_nutrition.py
+│   │   └── test_optimizer.py
+│   ├── requirements.txt
+│   └── .env.example
+└── frontend/
+    ├── src/
+    │   ├── pages/  (Dashboard, FoodItems, MessMenu, Analyser, Balancer)
+    │   ├── components/  (SummaryCard, CoverageBars, ConstraintChecklist, MenuGrid,
+    │   │                 FoodItemForm, WhatIfPanel, InfeasibleState, AlternativeCard, ...)
+    │   ├── api/client.js         # fetch wrapper, base URL from VITE_API_URL
+    │   ├── lib/format.js         # ₹ and % formatting
+    │   └── App.jsx
+    ├── vite.config.js            # dev proxy /api -> http://localhost:5000
+    └── .env.example
+```
 
-The system handles the technical complexity behind the interface.
+**UI reference:** the visual language (sidebar layout, summary cards, coverage bars, amber gap callouts, before/after comparison) should follow the existing `nutriplan-frontend` repo. Reuse its styling. Replace every hardcoded value with API data.
 
-4. Core Product Flow
-CONFIGURE
-    ↓
-ADD AVAILABLE INGREDIENTS
-    ↓
-DEFINE CONSTRAINTS
-    ↓
-OPTIMIZE
-    ↓
-VERIFY
-    ↓
-VIEW 7-DAY PLAN
-    ↓
-UNDERSTAND WHY
-    ↓
-WHAT-IF / RE-OPTIMIZE
-5. Main Features
-5.1 Institution Setup
+---
 
-The planner enters:
+## 6. Data model (MongoDB)
 
-Institution Type
-        ↓
-Number of People
-        ↓
-Daily Budget
-        ↓
-Kitchen Capacity
-        ↓
-Dietary Requirements
+### `food_items` — a servable dish, priced and measured **per serving (1 person)**
 
-Example:
-
-Institution: College Hostel
-People: 500
-Daily Budget: ₹18,000
-Kitchen Capacity: 500 meals/day
-
-Dietary:
-✓ Vegetarian
-✓ No specific allergens
-6. Ingredient Management
-
-The system provides a simple ingredient inventory.
-
-Example:
-
-Ingredient	Available	Price	Nutritional Data
-Rice	100 kg	₹45/kg	Yes
-Dal	30 kg	₹110/kg	Yes
-Vegetables	50 kg	₹60/kg	Yes
-Milk	50 L	₹55/L	Yes
-Banana	200	₹6/unit	Yes
-Groundnut	15 kg	₹140/kg	Yes
-
-For the hackathon MVP, the dataset can be preloaded.
-
-The user can modify availability when demonstrating the What-if feature.
-
-7. Meal Dataset
-
-Each meal combination contains structured information.
-
-Example:
-
+```json
 {
-  name: "Rice + Dal + Vegetable Curry",
-
-  costPerPerson: 32,
-
-  nutrition: {
-    energy: 620,
-    protein: 18,
-    iron: 5,
-    calcium: 120
-  },
-
-  ingredients: [
-    "rice",
-    "dal",
-    "vegetables"
-  ],
-
-  dietaryTags: [
-    "vegetarian"
-  ],
-
-  kitchenLoad: 1
+  "_id": "ObjectId",
+  "name": "Rice + Chana Masala",
+  "slot": "lunch",                       // breakfast | lunch | dinner
+  "unit": "serving",
+  "cost_per_unit": 12,                   // ₹ per serving
+  "nutrients_per_unit": { "energy_kcal": 620, "protein_g": 19, "iron_mg": 5.8, "calcium_mg": 110 },
+  "diet": "vegetarian",                  // vegetarian | non_vegetarian
+  "ingredients": [ { "name": "rice", "qty_per_unit": 0.10, "unit": "kg" },
+                   { "name": "chana", "qty_per_unit": 0.05, "unit": "kg" } ],
+  "kitchen_load": 1,
+  "active": true,
+  "source": "seed",                      // seed | user | ai_estimate
+  "created_at": "...", "updated_at": "..."
 }
+```
 
-The optimizer works with this structured data.
+### `stock` — weekly ingredient availability
 
-8. Optimization Logic
+```json
+{ "ingredient": "milk", "available_qty": 2000, "unit": "L" }
+```
 
-The most important technical decision:
+### `settings` — single document `_id: "default"`
 
-Deterministic Optimization Core
-
-The system does not use an LLM to decide what people should eat.
-
-Instead:
-
-Meal Dataset
-     ↓
-Hard Constraint Filtering
-     ↓
-Feasible Meals
-     ↓
-Objective Scoring
-     ↓
-Best Feasible Combination
-     ↓
-7-Day Meal Plan
-9. Hard Constraints
-
-These are requirements that the optimizer should not silently violate.
-
-Budget
-Total Cost ≤ Available Budget
-Ingredient Availability
-Required Quantity ≤ Available Quantity
-Kitchen Capacity
-Required Kitchen Capacity ≤ Available Capacity
-Dietary Requirements
-
-Example:
-
-Vegetarian requirement
-        ↓
-Non-vegetarian meals excluded
-
-These constraints determine whether a plan is feasible.
-
-10. Optimization Objectives
-
-After removing infeasible options, the system scores the remaining possibilities.
-
-Conceptually:
-
-              FEASIBLE MEALS
-                    ↓
-       ┌────────────┼────────────┐
-       ↓            ↓            ↓
-   Nutrition       Cost        Variety
-       ↓            ↓            ↓
-       └────────────┼────────────┘
-                    ↓
-              Final Score
-                    ↓
-             Best Feasible Plan
-
-Example scoring model:
-
-Final Score =
-
-40% Nutrition Coverage
-25% Cost Efficiency
-20% Meal Variety
-15% Ingredient Utilization
-
-These weights are configurable implementation parameters rather than claims that this is a universal nutritional standard.
-
-11. Nutrition Coverage
-
-The dashboard should make nutrition understandable.
-
-Instead of showing only raw numbers:
-
-Protein: 18g
-Iron: 5mg
-Calcium: 120mg
-
-show:
-
-Nutrition Coverage
-
-Energy       █████████░  92%
-Protein      ██████████  98%
-Iron         ████████░░  84%
-Calcium      █████████░  91%
-
-This makes the hidden nutrition gap visible.
-
-12. Constraint Status
-
-The final plan should clearly communicate whether it satisfies the important constraints.
-
-PLAN FEASIBILITY
-
-✓ Budget
-  ₹17,420 / ₹18,000
-
-✓ Ingredients
-  Available inventory sufficient
-
-✓ Kitchen Capacity
-  500 / 500 meals
-
-✓ Dietary Requirements
-  Vegetarian requirement satisfied
-
-✓ Nutrition
-  Target coverage achieved
-
-The user should never have to guess whether the generated plan is actually feasible.
-
-13. Hidden Nutrition Gap
-
-This is one of the most important parts of the concept.
-
-Instead of simply saying:
-
-"Here is your menu."
-
-NutriPlan shows:
-
-"Here is your menu, and here is what it achieves."
-
-Example:
-
-Current Plan
-
-Calories       ✓
-Protein        ✓
-Iron           ⚠ 84%
-Calcium        ✓
-
-The planner can immediately see that the menu may look acceptable while a specific nutrient remains below the selected target.
-
-14. What-If / Re-Optimization
-
-This is a major demo feature.
-
-The planner can change a real-world constraint.
-
-Example 1 — Budget Reduction
-
-Current:
-
-Budget: ₹18,000/day
-
-Change:
-
-Budget: ₹15,000/day
-
-Click:
-
-RE-OPTIMIZE
-
-The system recalculates the plan.
-
-Then show:
-
-BEFORE                     AFTER
-
-₹17,420                    ₹14,860
-
-Paneer Curry       →       Chana Curry
-Milk               →       Curd
-
-And explain the resulting nutrition/cost changes.
-
-15. Ingredient Availability Scenario
-
-Example:
-
-Remove Rice from available inventory
-
-Then:
-
-RE-OPTIMIZE
-
-The system finds another feasible combination if one exists.
-
-This demonstrates that the system responds to real operational constraints, rather than displaying a static meal plan.
-
-16. Infeasibility Handling
-
-This is important for credibility.
-
-Suppose the budget becomes unrealistically low.
-
-Instead of generating a bad menu and pretending it is valid:
-
-No Feasible Plan
-
-Show:
-
-Why?
-
-Available budget: ₹8,000/day
-
-Minimum feasible cost: ₹13,650/day
-
-Nutrition target cannot be satisfied
-within the current budget.
-
-Then provide possible adjustments:
-
-Possible adjustments:
-
-→ Increase budget
-→ Modify ingredient availability
-→ Relax selected nutrition target
-→ Increase available kitchen capacity
-
-The system should surface the conflict rather than hide it.
-
-17. Optional AI Explanation Layer
-
-AI is used only after optimization.
-
-              OPTIMIZER
-                  ↓
-           Verified Result
-                  ↓
-             Optional AI
-                  ↓
-       Human-Friendly Explanation
-AI should NOT:
-generate the meal plan
-calculate nutrition
-invent food prices
-validate nutritional adequacy
-override constraints
-AI CAN:
-
-Explain the already-computed result.
-
-Example:
-
-"The plan stayed within the daily budget by replacing the higher-cost paneer dish with a legume-based meal. The change maintains the selected protein target while reducing the estimated daily cost."
-
-If the AI API fails, the application still works using deterministic explanations.
-
-18. AI System Prompt
-You are a meal-plan explanation assistant.
-
-Explain the optimization result to a non-technical institutional meal planner using only the supplied data.
-
-Do not create, modify, validate, or recommend meals.
-
-Do not invent nutritional values, costs, ingredients, or constraints.
-
-Explain:
-- why the selected plan was chosen,
-- how it satisfies the supplied constraints,
-- what changed after re-optimization,
-- and which constraints could not be satisfied if the plan is infeasible.
-
-Keep the explanation simple and factual.
-19. Final System Architecture
-                         ┌─────────────────────────┐
-                         │     MEAL PLANNER        │
-                         │   Non-technical User    │
-                         └────────────┬────────────┘
-                                      │
-                                      ▼
-                    ┌──────────────────────────────┐
-                    │       REACT FRONTEND         │
-                    │                              │
-                    │  Setup                       │
-                    │  Ingredients                 │
-                    │  Constraints                 │
-                    │  Meal Plan                   │
-                    │  Nutrition Dashboard         │
-                    │  What-if                     │
-                    └──────────────┬───────────────┘
-                                   │
-                              API Request
-                                   │
-                                   ▼
-                    ┌──────────────────────────────┐
-                    │       NODE.JS + EXPRESS      │
-                    │                              │
-                    │     Optimization API        │
-                    └──────────────┬───────────────┘
-                                   │
-                                   ▼
-             ┌─────────────────────────────────────────────┐
-             │          DETERMINISTIC OPTIMIZER            │
-             │                                             │
-             │  ┌───────────────────────────────────────┐  │
-             │  │ Meal Dataset                          │  │
-             │  └──────────────────┬────────────────────┘  │
-             │                     ↓                       │
-             │  ┌───────────────────────────────────────┐  │
-             │  │ Hard Constraint Filtering             │  │
-             │  │                                       │  │
-             │  │ • Budget                              │  │
-             │  │ • Ingredient Availability              │  │
-             │  │ • Kitchen Capacity                    │  │
-             │  │ • Dietary Requirements                │  │
-             │  └──────────────────┬────────────────────┘  │
-             │                     ↓                       │
-             │  ┌───────────────────────────────────────┐  │
-             │  │ Objective Scoring                      │  │
-             │  │                                       │  │
-             │  │ • Nutrition Coverage                  │  │
-             │  │ • Cost Efficiency                     │  │
-             │  │ • Variety                             │  │
-             │  │ • Ingredient Utilization              │  │
-             │  └──────────────────┬────────────────────┘  │
-             │                     ↓                       │
-             │             Best Feasible Plan              │
-             └─────────────────────┬───────────────────────┘
-                                   │
-                                   ▼
-                    ┌──────────────────────────────┐
-                    │       PLAN VERIFICATION      │
-                    │                              │
-                    │  Cost                        │
-                    │  Nutrition                   │
-                    │  Ingredients                 │
-                    │  Kitchen Capacity            │
-                    │  Dietary Requirements        │
-                    └──────────────┬───────────────┘
-                                   │
-                                   ▼
-                    ┌──────────────────────────────┐
-                    │       OPTIONAL AI LAYER      │
-                    │                              │
-                    │  Human-friendly explanation  │
-                    └──────────────┬───────────────┘
-                                   │
-                                   ▼
-                    ┌──────────────────────────────┐
-                    │       REACT DASHBOARD        │
-                    │                              │
-                    │  7-Day Meal Plan             │
-                    │  Nutrition Coverage          │
-                    │  Cost & Budget               │
-                    │  Constraint Status           │
-                    │  Why This Plan?              │
-                    │  What-If Comparison          │
-                    └──────────────────────────────┘
-20. Technology Stack
-Frontend
-├── React
-├── Vite
-├── Tailwind CSS
-├── Lucide React
-└── Recharts
-
-Backend
-├── Node.js
-└── Express
-
-Optimization
-└── Deterministic JavaScript Optimization Engine
-
-Data
-└── JSON / JavaScript Dataset
-
-AI
-└── Optional LLM API
-   └── Explanation only
-
-Database
-└── None for MVP
-
-Deployment
-├── Vercel
-└── Render / Railway
-21. Frontend Architecture
-src/
-│
-├── components/
-│   ├── Navbar
-│   ├── SetupForm
-│   ├── ConstraintCard
-│   ├── IngredientTable
-│   ├── MealPlanTable
-│   ├── NutritionCard
-│   ├── BudgetCard
-│   ├── ConstraintStatus
-│   ├── WhyThisPlan
-│   ├── WhatIfPanel
-│   └── InfeasibleState
-│
-├── pages/
-│   ├── Setup
-│   └── Dashboard
-│
-├── data/
-│   ├── meals.js
-│   └── ingredients.js
-│
-├── services/
-│   └── api.js
-│
-├── utils/
-│   └── formatting.js
-│
-└── App.jsx
-22. Backend Architecture
-server/
-│
-├── data/
-│   ├── meals.js
-│   └── ingredients.js
-│
-├── services/
-│   ├── optimizer.js
-│   ├── nutrition.js
-│   └── explanation.js
-│
-├── routes/
-│   └── optimize.js
-│
-└── server.js
-API
-POST /api/optimize
-
-Input:
-
+```json
 {
+  "institution_type": "College Hostel",
   "people": 500,
-  "budget": 18000,
-  "kitchenCapacity": 500,
-  "dietaryRequirements": [
-    "vegetarian"
-  ],
-  "availableIngredients": [
-    "rice",
-    "dal",
-    "vegetables",
-    "milk",
-    "banana"
-  ]
+  "daily_budget": 18000,
+  "kitchen_capacity": 500,                // max meals served per meal-time
+  "diet": "vegetarian",                   // vegetarian | any
+  "targets_per_person_day": { "energy_kcal": 1500, "protein_g": 45, "iron_mg": 12, "calcium_mg": 450 },
+  "max_repeats_per_week": 2,              // same dish at most N times a week in its slot
+  "coverage_cap": 1.25                    // optimizer will not chase coverage above this
 }
+```
 
-Output:
+Targets are the **share of daily needs the mess supplies** across three meals. They are demo values; verify against ICMR-NIN before presenting them as official.
 
+### `menus` — the current saved week, `_id: "current"`
+
+```json
+{
+  "days": [ { "day": "MON", "breakfast": "<food_item_id>", "lunch": "<id>", "dinner": "<id>" }, "... 7 entries" ],
+  "source": "manual",                     // manual | balancer
+  "updated_at": "..."
+}
+```
+
+### `plan_runs` — history of balancer runs (used for what-if "before")
+
+```json
+{ "settings_snapshot": {}, "result": {}, "created_at": "..." }
+```
+
+---
+
+## 7. Core algorithms
+
+### 7.1 Evaluator (`nutrition.py`) — used by Dashboard, Menu, Analyser, and to verify every optimizer output
+
+For a menu (7 days × 3 slots) and settings, compute:
+
+- `cost_per_person_day` = mean over 7 days of the sum of the three items' `cost_per_unit`; `daily_total` = that × people.
+- Weekly nutrient average per person per day, and `coverage[k] = average_k / target_k` (1.0 = 100%).
+- Per-day coverage (so a bad single day is visible).
+- Constraint statuses (see 8.1): budget, ingredients/stock, kitchen capacity, diet, **each nutrient**, variety.
+- Contributors: which items supply each nutrient.
+
+**Every plan returned by the optimizer is passed through the evaluator before being sent to the UI.** If the two ever disagree, return a 500 with a clear error. Never show unverified numbers.
+
+### 7.2 Optimizer (`optimizer.py`) — one MILP formulation, three modes
+
+Pre-filter items by `active`, `diet`, and slot. If any slot has no eligible item, report infeasible with that reason. If `people > kitchen_capacity`, report infeasible with that reason.
+
+**Variables**
+- `x_m ∈ {0, …, max_repeats}` integer: number of days item `m` is served in its slot.
+- `t` continuous: the weakest nutrient's coverage ratio.
+
+**Constraints**
+- For each slot `s`: `Σ_{m∈s} x_m = 7`
+- Nutrient `k`: `Σ_m x_m · n_{m,k} ≥ 7 · T_k · t`
+- Budget (modes B and C): `Σ_m x_m · c_m ≤ 7 · (daily_budget / people)`
+- Stock, per ingredient `i`: `people · Σ_m x_m · q_{m,i} ≤ stock_i`
+
+**Modes**
+
+| Mode | `t` bounds | Objective | Purpose |
+|---|---|---|---|
+| **A `min_cost`** | `t = 1` | minimize `Σ x_m c_m`, **no budget constraint** | True minimum feasible cost (for the funding gap) |
+| **B `balanced`** | `1 ≤ t ≤ coverage_cap` | maximize `t − 0.01 · (Σ x_m c_m / 7)` | The plan shown when feasible |
+| **C `best_effort`** | `0 ≤ t ≤ coverage_cap` | maximize `t` | Best plan within budget when full targets are impossible |
+
+Use `scipy.optimize.milp` (integrality on `x`, continuous `t`). Do not hardcode any "minimum feasible cost", it must come from mode A.
+
+### 7.3 Day assignment (`assign.py`)
+
+The MILP decides *how many days* each dish is served. Then assign dishes to days: within each slot, spread repeats (no same dish on consecutive days) and pair breakfast/lunch/dinner so the **worst single day's coverage is as high as possible**. A simple randomized swap search (about 2,000 iterations, fixed seed) is sufficient. Weekly totals do not change, so this step cannot break feasibility. Report per-day coverage in the result.
+
+### 7.4 Infeasibility diagnosis and alternatives (`diagnose.py`)
+
+Only runs when mode B is infeasible.
+
+1. **Binding constraints:** relax each hard constraint group one at a time (budget, stock, nutrition targets) and re-solve. Any group whose relaxation alone makes it feasible is listed as binding. If none works alone, report "combination".
+2. **Minimum feasible cost** = mode A result (with stock enforced). `funding_gap_daily = min_cost_daily − daily_budget`. Also return `funding_gap_per_person`.
+3. **Cheapest possible day** = sum of the cheapest eligible item per slot × people. If `daily_budget` is below this, no complete menu fits at all. Say so, and skip best-effort.
+4. **Alternatives** (each carries a full evaluated plan the UI can preview):
+   - **A `fund_gap`:** re-solve mode B with `daily_budget = min_cost_daily`.
+   - **B `best_effort`:** mode C at the current budget. Label `meets_targets: false` and list `shortfalls` per nutrient.
+   - **C `stock_change`** **(stretch)**: for each out-of-stock or low-stock ingredient, try restocking it and record the drop in minimum cost. Return the top one.
+   - **D `combined`** **(stretch)**.
+5. Order alternatives by smallest change first; return at most 4.
+
+### 7.5 Swap suggestions (`swaps.py`) — deterministic, feeds the Analyser
+
+For the weakest nutrient in an analysed menu, try replacing each of the 21 slots' items with every other eligible item in the same slot (respecting repeats, stock and diet). Rank by *coverage gain per extra rupee*. Return the top 3 as `{day, slot, from, to, delta_coverage, delta_cost_per_person}`. The LLM may only narrate these. It must never invent its own swaps.
+
+---
+
+## 8. API contract
+
+Base path `/api`. All responses are JSON. Errors: `{ "error": "message", "details": {} }` with a proper status code.
+
+| Method | Path | Purpose |
+|---|---|---|
+| GET/POST | `/food-items` | List (filter by `slot`, `active`) / create |
+| PUT/DELETE | `/food-items/<id>` | Update / delete |
+| GET/PUT | `/stock` | Read / update ingredient stock |
+| GET/PUT | `/settings` | Read / update institution settings and targets |
+| GET/PUT | `/menu` | Read / save the current week (manual edit) |
+| GET | `/dashboard` | Summary of the current menu (evaluator output plus last run info and stock warnings) |
+| POST | `/analyze` | Evaluate a menu (body `menu` optional, defaults to current). Add `?explain=true` for an LLM narrative |
+| POST | `/balance` | Body: optional `overrides` (e.g. `{ "daily_budget": 15000 }`) and `apply` (bool, saves menu). Returns `PlanResult` |
+| POST | `/whatif` | Body: `overrides`. Solves with overrides and returns `PlanResult` plus `diff` versus the current saved menu |
+| POST | `/explain` | Body: a `PlanResult` or `AnalysisResult`. Returns `{ text, source: "llm" \| "template" }` |
+| POST | `/food-items/estimate` **(stretch)** | LLM nutrient estimate for a new dish. Response is flagged `ai_estimate`, and the user must confirm before saving |
+| POST | `/seed/reset` | Restore seed data (demo safety net) |
+| GET | `/health` | Liveness check |
+
+### 8.1 `PlanResult` (also the shape of `/analyze` output, minus `infeasibility`)
+
+```json
 {
   "feasible": true,
-
-  "plan": [],
-
-  "totalCost": 17420,
-
+  "mode": "balanced",
+  "inputs": { "people": 500, "daily_budget": 18000, "diet": "vegetarian", "kitchen_capacity": 500 },
+  "menu": { "days": [ { "day": "MON",
+      "breakfast": { "id": "…", "name": "Ragi Dosa + Chutney" },
+      "lunch":     { "id": "…", "name": "Rice + Palak Dal" },
+      "dinner":    { "id": "…", "name": "Chapati + Chana Curry" } } ] },
+  "cost": { "per_person_day": 33.0, "daily_total": 16500, "budget": 18000, "remaining": 1500 },
   "nutrition": {
-    "energy": 92,
-    "protein": 98,
-    "iron": 84,
-    "calcium": 91
+    "coverage": { "energy_kcal": 1.02, "protein_g": 1.05, "iron_mg": 1.00, "calcium_mg": 1.10 },
+    "targets_met": true,
+    "gaps": []
   },
-
-  "constraints": {
-    "budget": true,
-    "ingredients": true,
-    "kitchenCapacity": true,
-    "dietaryRequirements": true
-  },
-
-  "changes": []
+  "per_day": [ { "day": "MON", "coverage": { "energy_kcal": 1.0, "protein_g": 1.1, "iron_mg": 1.0, "calcium_mg": 1.2 }, "cost_per_person": 31 } ],
+  "constraints": [
+    { "key": "budget",    "label": "Budget",            "status": "ok",   "detail": "₹16,500 of ₹18,000" },
+    { "key": "stock",     "label": "Ingredients",       "status": "ok",   "detail": "All within stock" },
+    { "key": "kitchen",   "label": "Kitchen capacity",  "status": "ok",   "detail": "500 of 500 meals" },
+    { "key": "diet",      "label": "Dietary requirement","status": "ok",  "detail": "Vegetarian" },
+    { "key": "nutrition", "label": "Nutrition targets", "status": "ok",   "detail": "All 4 nutrients at or above 100%" },
+    { "key": "variety",   "label": "Variety",           "status": "ok",   "detail": "≥ 4 distinct dishes per meal slot" }
+  ],
+  "diff": null,
+  "infeasibility": null,
+  "explanation": { "text": "…", "source": "llm" }
 }
-23. UI Structure
-Screen 1 — Setup
-┌──────────────────────────────────────────────┐
-│ NutriPlan                         Step 1/3   │
-│ Institutional Meal Optimizer                │
-├──────────────────────────────────────────────┤
-│                                              │
-│ Institution                                  │
-│ [ College Hostel ▼ ]                         │
-│                                              │
-│ People Served                                │
-│ [ 500 ]                                      │
-│                                              │
-│ Daily Budget                                 │
-│ [ ₹18,000 ]                                  │
-│                                              │
-│ Kitchen Capacity                             │
-│ [ 500 meals/day ]                            │
-│                                              │
-│ Dietary Requirements                         │
-│ [✓] Vegetarian                               │
-│                                              │
-│             [ Continue → ]                   │
-└──────────────────────────────────────────────┘
-24. Screen 2 — Ingredients
-Available Ingredients
+```
 
-Rice          100 kg       ✓
-Dal            30 kg       ✓
-Vegetables     50 kg       ✓
-Milk           50 L        ✓
-Banana        200 units    ✓
-Groundnut      15 kg       ✓
+Constraint `status` is `ok | warn | fail`. **`nutrition` must be `warn` or `fail` whenever any nutrient is below 100%**, and the page-level header state must reflect it (e.g. "Feasible · 1 nutrition gap"). Never show an all-green state with a gap.
 
-                    [ Generate Plan ]
-25. Screen 3 — Optimization Dashboard
+`diff` (what-if): `{ "cost_daily": {"before": 16500, "after": 14900}, "coverage": {…before/after per nutrient…}, "changed_meals": [ { "day": "TUE", "slot": "lunch", "from": "…", "to": "…" } ] }`
 
-Top-level cards:
+### 8.2 `infeasibility` object
 
-₹17,420
-Daily Cost
+```json
+{
+  "feasible": false,
+  "binding": ["budget"],
+  "min_feasible_cost_daily": 16500,
+  "funding_gap_daily": 1500,
+  "funding_gap_per_person": 3.0,
+  "cheapest_possible_day_daily": 13000,
+  "alternatives": [
+    { "id": "A", "type": "fund_gap",    "change": { "daily_budget": 16500 }, "plan": { } },
+    { "id": "B", "type": "best_effort", "meets_targets": false,
+      "shortfalls": { "iron_mg": 0.11, "protein_g": 0.05 }, "plan": { } }
+  ]
+}
+```
 
-92%
-Nutrition
+When infeasible, the top-level `PlanResult` has `feasible: false`, `menu: null`, and `infeasibility` populated.
 
-500
-People Served
+---
 
-✓
-All Constraints
+## 9. LLM layer (Groq, explain-only)
 
-Then:
+**Env:** `GROQ_API_KEY`, `GROQ_MODEL`. Choose a current model from Groq's console. Do not hardcode a model name. The key stays server-side, never in the frontend.
 
-7-DAY MEAL PLAN
-─────────────────────────────────────────────
+**Calls:** only from `services/explain.py`, with a hard timeout of about 8 seconds, `temperature ≤ 0.3`, and input limited to the computed result JSON (menu, cost, coverage, constraints, swap suggestions, infeasibility). Strip anything else.
 
-       Breakfast       Lunch          Dinner
+**System prompt:**
 
-Mon    Idli + Milk     Rice + Dal     Chapati + Curry
-Tue    Upma + Banana   Rice + Sambar  Rice + Vegetables
-Wed    Dosa + Milk     Rice + Dal     Chapati + Dal
-...
-26. Nutrition Dashboard
-NUTRITION COVERAGE
+```
+You are a meal-plan explanation assistant for an institutional mess manager.
+Explain the supplied result in simple, plain language, in at most 120 words.
+Use ONLY the numbers and dish names present in the supplied JSON.
+Do NOT create, modify, validate or recommend meals. Do NOT calculate or invent
+nutrition values, prices, ingredients or constraints. You may only mention swap
+suggestions that appear in the input's "swap_suggestions" list.
+Cover, when present in the input: why this plan was chosen; which nutrients are
+below target and by how much; what changed after a what-if; and, if infeasible,
+which constraint is binding and the funding gap.
+If a nutrient is below 100%, state it clearly. Never describe such a plan as fully
+meeting targets. Do not use markdown.
+```
 
-Energy       █████████░ 92%
-Protein      ██████████ 98%
-Iron         ████████░░ 84%
-Calcium      █████████░ 91%
+**Fallback:** if the call fails, times out, or returns empty text, generate a template string from the same JSON (e.g. "Iron is at 56% of target. Swapping X for Y on TUE lunch raises it to 71% for ₹2 more per person.") and return `source: "template"`. The UI shows a small "AI" or "auto-generated" tag accordingly.
 
-Highlight gaps instead of hiding them.
+---
 
-27. Why This Plan?
-WHY THIS PLAN?
+## 10. Pages (what each must do)
 
-✓ Fits within your daily budget
-✓ Uses currently available ingredients
-✓ Meets the selected dietary requirement
-✓ Fits your kitchen capacity
-✓ Maintains the selected nutrition targets
+1. **Dashboard:** weekly cost vs budget, per-nutrient coverage bars (amber under 100%), constraint checklist including nutrition, stock warnings, and a link to Balancer.
+2. **Food Items:** table with search and slot filter. Add, edit and delete dish (name, slot, ₹ per serving, four nutrients, diet, ingredients). Inline stock editor. "Reset demo data" button.
+3. **Mess Menu:** 7-day × 3-slot grid. Each cell is a dropdown of eligible items for that slot. Live totals (cost and coverage) update via `/analyze` on every change. Save button.
+4. **Analyser:** run analysis on the current or edited menu. Show coverage bars, per-day coverage, contributors, gaps, ranked swap suggestions, and an AI explanation. A "Preview swap" action applies a suggestion to a draft menu and shows the change in coverage and cost.
+5. **Balancer:** the settings panel (people, budget, diet, kitchen capacity, stock toggles), a **Generate plan** button, and the resulting plan with the constraint checklist. A budget slider drives the **what-if** with before/after comparison. When infeasible, show the **InfeasibleState**: why it fails, funding gap in ₹/day and ₹/person, and one `AlternativeCard` per alternative with a **Preview** button. An **Apply to menu** button saves the plan.
 
-The optimizer selected lower-cost protein sources
-where possible to preserve nutrition while keeping
-the total meal cost within the budget.
-28. What-If Mode
-WHAT IF?
+---
 
-Daily Budget
+## 11. Seed data
 
-₹18,000
-───────────────●────
-₹15,000
+Seed `food_items` from Appendix A and `stock` with **2,000 units of every ingredient** (generous so stock does not bind by default). Set Milk stock to 0 during the demo to show the ingredient constraint. Seed `settings` with the values in section 6. Seed a "habitual" starter menu (see acceptance test 1) into `menus`. `seed.py` must be idempotent and callable from `POST /seed/reset`.
 
-                 [ Re-optimize ]
+---
 
-────────────────────────────────────
+## 12. Acceptance tests (with seed data; must pass before demo)
 
-BEFORE                 AFTER
+| # | Scenario | Expected |
+|---|---|---|
+| 1 | Analyse the habitual menu: Idli + Milk / Curd Rice + Veg / Veg Pulao + Raita, all 7 days | ₹32/person, ₹16,000/day. Coverage: energy 98%, **protein 84%, iron 56%**, calcium 138%. Nutrition constraint is not green. |
+| 2 | Mode A minimum cost (seed, full stock, max 2 repeats) | ₹33.00/person/day, i.e. **₹16,500/day** |
+| 3 | Balance at ₹18,000/day | Feasible, all four coverages ≥ 100%, cost ≤ ₹18,000, ≥ 4 distinct dishes per slot. Evaluator agrees with optimizer. |
+| 4 | What-if ₹15,000/day | Infeasible. Gap **₹1,500/day (₹3/person)**. Alternative B best-effort at about 89% minimum coverage, labeled "does not meet targets". Alternative A at ₹16,500 feasible. |
+| 5 | Balance at ₹8,000/day | Infeasible. Cheapest possible day is **₹13,000**, so no complete menu fits. Message says so. Alternative A is offered. |
+| 6 | Milk stock set to 0, balance at ₹18,000 | Plan contains no Idli + Milk. Either a valid plan or a clear infeasibility explanation. |
+| 7 | `kitchen_capacity` set below `people` | Infeasible with an explicit kitchen reason. |
+| 8 | Groq key removed or invalid | Everything works. Explanations come from templates with `source: "template"`. |
+| 9 | Edit a dish's price in Food Items, then re-analyse | Costs and results change accordingly. |
 
-₹17,420                ₹14,860
+Automate tests 1 to 5 and 7 in `pytest`.
 
-Paneer Curry     →     Chana Curry
-Milk             →     Curd
+---
 
-Nutrition: 92%         Nutrition: 89%
+## 13. Environment variables
 
-This gives judges an immediate demonstration of the optimization engine.
+```
+# backend/.env
+MONGO_URI=mongodb://localhost:27017
+DB_NAME=nutriplan
+GROQ_API_KEY=
+GROQ_MODEL=
+FRONTEND_ORIGIN=http://localhost:5173
+PORT=5000
 
-29. Infeasible State
-             ⚠ NO FEASIBLE PLAN
-
-The current constraints cannot be satisfied.
-
-Budget available       ₹8,000
-Minimum feasible cost   ₹13,650
-
-Nutrition target cannot be achieved
-within the current budget.
-
-Possible changes:
-
-[ Increase Budget ]
-
-[ Adjust Ingredient Availability ]
-
-[ Review Selected Targets ]
-
-This is much stronger than silently producing an invalid plan.
-
-30. Hackathon Demo Flow
-
-The entire demo should take approximately 3–5 minutes.
-
-Step 1
-
-Start with:
-
-College Hostel
-500 students
-₹18,000/day
-Vegetarian
-500 meal kitchen capacity
-Step 2
-
-Generate the plan.
-
-Show:
-
-7-day menu
-₹17,420 cost
-Nutrition coverage
-Constraint status
-Step 3
-
-Say:
-
-"Now let's see what happens when the real-world constraint changes."
-
-Reduce:
-
-₹18,000 → ₹15,000
-
-Click:
-
-Re-optimize
-
-Show the changed meals and nutrition/cost impact.
-
-Step 4
-
-Remove an ingredient.
-
-Milk → unavailable
-
-Re-optimize.
-
-Show how the plan adapts.
-
-Step 5
-
-Create an extreme constraint.
-
-₹8,000
-
-Show:
-
-No feasible plan
-
-and explain the conflict.
-
-31. UHV Connection
-
-NutriPlan is not simply a food calculator.
-
-The underlying value proposition is:
-
-Justice
-
-People dependent on institutional meals should not silently receive nutritionally inadequate food because of hidden planning trade-offs.
-
-Trust
-
-The system shows why a plan was selected instead of presenting an unexplained AI-generated menu.
-
-Right Understanding
-Full stomach ≠ Balanced nutrition
-
-The dashboard makes the difference visible.
-
-Respect
-
-Dietary requirements are treated as first-class constraints rather than optional preferences.
-
-Transparency
-
-When constraints conflict, the system communicates the conflict instead of hiding it.
-
-32. What We Are NOT Building
-
-To protect the 2-hour MVP scope:
-
-❌ Authentication
-❌ Complex role management
-❌ IoT
-❌ Sensors
-❌ Hardware
-❌ Blockchain
-❌ Real-time supplier marketplace
-❌ Mobile application
-❌ Complex ML model
-❌ LLM-generated meal plans
-❌ Production database
-❌ Payment system
-❌ Notification system
-❌ Huge food database
-
-The product should demonstrate the core problem-solving capability, not unnecessary technology.
-
-33. Final Product Positioning
-One-line pitch
-
-NutriPlan is a transparent institutional meal optimization system that helps meal planners balance nutrition, budget, ingredient availability, kitchen capacity, and dietary needs—while making every trade-off visible.
-
-Demo pitch
-
-"Institutions don't struggle because they don't know what healthy food is. They struggle because they have to make nutrition decisions under real-world constraints. NutriPlan turns those constraints into a transparent optimization problem, generates a feasible 7-day meal plan, shows the nutritional and financial impact, and lets planners see exactly what changes when their constraints change."
-
-34. Final MVP Architecture in One Diagram
-                         NUTRIPLAN
-                            │
-                ┌───────────┴───────────┐
-                │                       │
-             INPUTS                   USER
-                │                       │
-     ┌──────────┼──────────┐            │
-     │          │          │            │
-  Budget    Ingredients  Kitchen      Dietary
-     │          │          │          Needs
-     └──────────┼──────────┼───────────┘
-                │
-                ▼
-       ┌───────────────────┐
-       │  HARD CONSTRAINTS  │
-       │                   │
-       │ Budget            │
-       │ Ingredients       │
-       │ Kitchen           │
-       │ Dietary           │
-       └─────────┬─────────┘
-                 │
-                 ▼
-          FEASIBLE OPTIONS
-                 │
-                 ▼
-       ┌───────────────────┐
-       │ OPTIMIZATION CORE │
-       │                   │
-       │ Nutrition         │
-       │ Cost              │
-       │ Variety           │
-       │ Utilization       │
-       └─────────┬─────────┘
-                 │
-                 ▼
-          BEST FEASIBLE PLAN
-                 │
-        ┌────────┴────────┐
-        ▼                 ▼
-   VERIFICATION      AI EXPLANATION
-        │                 │
-        └────────┬────────┘
-                 ▼
-       ┌───────────────────┐
-       │   USER DASHBOARD  │
-       │                   │
-       │ 7-Day Plan        │
-       │ Cost              │
-       │ Nutrition         │
-       │ Constraints       │
-       │ Why?              │
-       │ What-if           │
-       └─────────┬─────────┘
-                 │
-                 ▼
-           RE-OPTIMIZE
-                 │
-                 └──────────→ Optimization Core
-Final technical principle
-
-The frontend is the product experience.
-The deterministic optimizer is the product intelligence.
-The optional LLM is only the product explainer.
+# frontend/.env
+VITE_API_URL=http://localhost:5000/api
+```
+
+`backend/requirements.txt`: `flask`, `flask-cors`, `pymongo`, `pydantic`, `numpy`, `scipy`, `python-dotenv`, `groq`, `gunicorn`, `pytest`
+
+**Run:**
+
+```
+cd backend && pip install -r requirements.txt && python seed/seed.py && flask --app app run --port 5000
+cd frontend && npm install && npm run dev
+```
+
+---
+
+## 14. Build order (about 2 hours)
+
+1. **(15 min)** Flask skeleton, Mongo connection, seed script, `/food-items`, `/stock`, `/settings`, `/menu` CRUD. Frontend scaffold with routing and layout.
+2. **(20 min)** `nutrition.py` evaluator and `/analyze`, with tests 1 and 9. Mess Menu page and Analyser page wired to it.
+3. **(30 min)** `optimizer.py` (modes A, B, C), `assign.py`, `/balance`. Tests 2 to 3.
+4. **(20 min)** `diagnose.py` (binding constraints, funding gap, alternatives A and B), `/whatif`. Tests 4, 5, 7. Balancer page with InfeasibleState.
+5. **(15 min)** `swaps.py`, `explain.py` with template fallback first, then Groq. Dashboard page.
+6. **(20 min)** Integrate, run all acceptance tests, fix, deploy or rehearse.
+
+**Cut in this order if late:** Dashboard polish, alternatives C and D, `/food-items/estimate`, deployment (run locally).
+
+---
+
+## 15. Non-goals
+
+Authentication and roles, a custom ML model, LLM-generated menus, IoT/hardware/blockchain, supplier marketplace, mobile app, payments, notifications, a production-grade nutrient database.
+
+---
+
+## Appendix A — Seed dishes (sample data, per 1 person serving)
+
+All `diet: vegetarian`. Quantities in `ingredients` are per serving (kg, L or unit). Label the whole set "sample data" in the UI.
+
+| Name | Slot | ₹ | kcal | Protein g | Iron mg | Calcium mg | Ingredients (per serving) |
+|---|---|---|---|---|---|---|---|
+| Idli + Sambar | breakfast | 8 | 330 | 10 | 2.2 | 70 | rice 0.05 kg, dal 0.02 kg |
+| Upma + Banana | breakfast | 7 | 340 | 7 | 1.8 | 30 | semolina 0.06 kg, banana 1 unit |
+| Poha + Peanuts | breakfast | 8 | 360 | 10 | 3.6 | 40 | poha 0.06 kg, groundnut 0.02 kg |
+| Ragi Dosa + Chutney | breakfast | 8 | 340 | 9 | 4.0 | 200 | ragi 0.06 kg |
+| Pongal | breakfast | 9 | 380 | 12 | 2.6 | 55 | rice 0.05 kg, dal 0.02 kg |
+| Idli + Milk | breakfast | 11 | 380 | 14 | 1.9 | 250 | rice 0.05 kg, milk 0.2 L |
+| Rice + Dal + Veg Curry | lunch | 13 | 620 | 19 | 4.8 | 110 | rice 0.10 kg, dal 0.04 kg, vegetables 0.10 kg |
+| Rice + Sambar + Poriyal | lunch | 11 | 570 | 15 | 4.2 | 95 | rice 0.10 kg, dal 0.03 kg, vegetables 0.12 kg |
+| Rice + Chana Masala | lunch | 12 | 620 | 19 | 5.8 | 110 | rice 0.10 kg, chana 0.05 kg |
+| Rice + Rajma | lunch | 14 | 640 | 21 | 6.0 | 130 | rice 0.10 kg, rajma 0.05 kg |
+| Rice + Palak Dal | lunch | 13 | 600 | 19 | 7.0 | 160 | rice 0.10 kg, dal 0.04 kg, spinach 0.08 kg |
+| Curd Rice + Veg | lunch | 10 | 520 | 12 | 2.0 | 210 | rice 0.10 kg, curd 0.15 kg, vegetables 0.08 kg |
+| Rice + Paneer Curry | lunch | 21 | 650 | 21 | 2.6 | 290 | rice 0.10 kg, paneer 0.06 kg |
+| Chapati + Dal | dinner | 11 | 570 | 17 | 4.5 | 85 | wheat 0.10 kg, dal 0.04 kg |
+| Chapati + Chana Curry | dinner | 12 | 600 | 19 | 5.5 | 95 | wheat 0.10 kg, chana 0.05 kg |
+| Chapati + Mixed Veg | dinner | 9 | 490 | 11 | 3.6 | 70 | wheat 0.10 kg, vegetables 0.15 kg |
+| Chapati + Soya Curry | dinner | 12 | 600 | 23 | 5.2 | 90 | wheat 0.10 kg, soya 0.04 kg |
+| Veg Pulao + Raita | dinner | 11 | 570 | 12 | 2.8 | 160 | rice 0.10 kg, vegetables 0.08 kg, curd 0.10 kg |
+| Chapati + Paneer Curry | dinner | 21 | 620 | 21 | 2.7 | 280 | wheat 0.10 kg, paneer 0.06 kg |
+| Khichdi + Curd | dinner | 10 | 550 | 16 | 3.8 | 170 | rice 0.07 kg, dal 0.04 kg, curd 0.10 kg |
+
+Note: the nutrient values are illustrative demo values, not IFCT measurements. Acceptance tests 1 to 5 depend on these exact numbers.
