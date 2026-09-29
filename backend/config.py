@@ -23,7 +23,7 @@ class Config:
     AI_FALLBACK_PROVIDER = os.getenv("AI_FALLBACK_PROVIDER", "ollama")
 
     # CORS
-    FRONTEND_ORIGIN = os.getenv("FRONTEND_ORIGIN", "http://localhost:3000")
+    FRONTEND_ORIGIN = os.getenv("FRONTEND_ORIGIN", "http://localhost:5173")
 
     # Flask
     FLASK_PORT = int(os.getenv("FLASK_PORT", 5000))

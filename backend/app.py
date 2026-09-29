@@ -23,7 +23,7 @@ def create_app():
     app = Flask(__name__)
 
     # CORS — allow the React dev server
-    CORS(app, origins=[Config.FRONTEND_ORIGIN, "http://localhost:5173"])
+    CORS(app, origins=[Config.FRONTEND_ORIGIN])
 
     # Register blueprints
     app.register_blueprint(foods_bp)
