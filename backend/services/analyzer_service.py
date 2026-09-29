@@ -30,11 +30,12 @@ def analyze_menu(menu_id: str, explain: bool = False) -> dict:
     if explain:
         explanation_input = {
             "coverage": summary.get("coverage", {}),
-            "gaps": [g["nutrient"] for g in summary.get("gaps", [])],
+            "gaps": summary.get("gaps", []),
             "cost": summary.get("cost", {}),
             "availableFoods": [f["name"] for f in foods_by_id.values()],
         }
-        summary["aiExplanation"] = ai_service.explain_analysis(explanation_input)
+        ai_resp = ai_service.explain_analysis(explanation_input)
+        summary["aiExplanation"] = ai_resp.get("text") if ai_resp else None
     else:
         summary["aiExplanation"] = None
 
