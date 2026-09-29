@@ -14,6 +14,9 @@ def get_settings() -> dict:
         settings_collection().insert_one(DEFAULT_SETTINGS.copy())
         doc = settings_collection().find_one({"_id": "default"})
     doc["_id"] = str(doc["_id"])
+    if "ai" not in doc:
+        from models.settings import DEFAULT_SETTINGS
+        doc["ai"] = DEFAULT_SETTINGS["ai"]
     return doc
 
 
@@ -22,8 +25,16 @@ def update_settings(data: dict) -> dict:
     from database.mongodb import settings_collection
     update_fields = {}
     for field in ["peopleCount", "dailyBudget", "kitchenCapacity",
-                   "dietaryRequirements", "nutritionTargets"]:
+                   "dietaryRequirements", "nutritionTargets", "ai"]:
         if field in data:
+            if field == "ai":
+                ai_data = data["ai"]
+                provider = ai_data.get("provider")
+                model = ai_data.get("model")
+                if provider not in ["groq", "ollama"]:
+                    raise ValueError(f"Invalid AI provider: {provider}")
+                if not model:
+                    raise ValueError("AI model is required.")
             update_fields[field] = data[field]
     if update_fields:
         settings_collection().update_one(

@@ -53,7 +53,7 @@ BALANCER_EXPLANATION_PROMPT = (
 
 # ──────────────── Provider implementations ────────────────
 
-def _call_groq(messages: list[dict], temperature: float = 0.3, timeout: int = 8) -> str | None:
+def _call_groq(messages: list[dict], model: str, temperature: float = 0.3, timeout: int = 8) -> str | None:
     """Call the Groq API. Returns the response text or None on failure."""
     if not Config.GROQ_API_KEY:
         logger.warning("Groq API key not configured — skipping Groq.")
@@ -62,7 +62,7 @@ def _call_groq(messages: list[dict], temperature: float = 0.3, timeout: int = 8)
         from groq import Groq
         client = Groq(api_key=Config.GROQ_API_KEY)
         response = client.chat.completions.create(
-            model=Config.GROQ_MODEL,
+            model=model,
             messages=messages,
             temperature=temperature,
             max_tokens=512,
@@ -74,13 +74,13 @@ def _call_groq(messages: list[dict], temperature: float = 0.3, timeout: int = 8)
         return None
 
 
-def _call_ollama(messages: list[dict], temperature: float = 0.3, timeout: int = 15) -> str | None:
+def _call_ollama(messages: list[dict], model: str, temperature: float = 0.3, timeout: int = 15) -> str | None:
     """Call the Ollama HTTP API. Returns the response text or None on failure."""
     try:
         import requests
         url = f"{Config.OLLAMA_BASE_URL}/api/chat"
         payload = {
-            "model": Config.OLLAMA_MODEL,
+            "model": model,
             "messages": messages,
             "stream": False,
             "options": {"temperature": temperature},
@@ -94,25 +94,21 @@ def _call_ollama(messages: list[dict], temperature: float = 0.3, timeout: int = 
 
 
 def _call_ai(messages: list[dict], temperature: float = 0.3) -> str | None:
-    """Try primary provider, then fallback. Returns response text or None."""
+    """Try primary provider using settings. Returns response text or None."""
+    from services.nutrition_service import get_settings
+    settings = get_settings()
+    ai_config = settings.get("ai", {})
+    provider_name = ai_config.get("provider", "groq")
+    model_name = ai_config.get("model", "llama3-8b-8192")
+
     providers = {
         "groq": _call_groq,
         "ollama": _call_ollama,
     }
 
-    # Try primary
-    primary = providers.get(Config.AI_PRIMARY_PROVIDER)
-    if primary:
-        result = primary(messages, temperature)
-        if result:
-            return result
-
-    # Try fallback
-    fallback = providers.get(Config.AI_FALLBACK_PROVIDER)
-    if fallback and fallback != primary:
-        result = fallback(messages, temperature)
-        if result:
-            return result
+    provider_func = providers.get(provider_name)
+    if provider_func:
+        return provider_func(messages, model_name, temperature)
 
     return None
 

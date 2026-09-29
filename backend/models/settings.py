@@ -13,6 +13,10 @@ DEFAULT_SETTINGS = {
         "calcium": 450,
         "fiber": 25,
     },
+    "ai": {
+        "provider": "groq",
+        "model": "llama3-8b-8192"
+    },
 }
 
 
