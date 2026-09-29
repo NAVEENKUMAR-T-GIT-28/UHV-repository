@@ -16,6 +16,7 @@ from routes.menu import menu_bp
 from routes.analyzer import analyzer_bp
 from routes.balancer import balancer_bp
 from routes.ai import ai_bp
+from routes.chat import chat_bp
 
 
 def create_app():
@@ -31,6 +32,7 @@ def create_app():
     app.register_blueprint(analyzer_bp)
     app.register_blueprint(balancer_bp)
     app.register_blueprint(ai_bp)
+    app.register_blueprint(chat_bp)
 
     # Seed reset endpoint
     @app.route("/api/seed/reset", methods=["POST"])
